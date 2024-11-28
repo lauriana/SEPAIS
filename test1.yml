@@ -1,26 +1,57 @@
-# PHP
-# Test and package your PHP project.
-# Add steps that run tests, save build artifacts, deploy, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/php
+<?php
+include('../secure.php'); // Inclui a conexão ao banco e configurações
 
-trigger:
-- main
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        $sql = connect();
 
-pool:
-  vmImage: ubuntu-latest
+        // Dados do formulário
+        $nome = ucwords(strtolower($_POST['nome']));
+        $email = strtolower($_POST['email']);
+        $senha = password_hash($_POST['senha'], PASSWORD_DEFAULT);
+        $telefone = preg_replace('/\D/', '', $_POST['telefone']); // Remove caracteres não numéricos
+        $alunos_ids = $_POST['alunos_ids']; // Deve ser enviado como um array no formulário
+        $foto_path = "static/default_user_icon.jpg";
 
-variables:
-  phpVersion: 8.1
+        // Início da transação
+        $sql->begin_transaction();
 
-steps:
-- script: |
-    sudo update-alternatives --set php /usr/bin/php$(phpVersion)
-    sudo update-alternatives --set phar /usr/bin/phar$(phpVersion)
-    sudo update-alternatives --set phpdbg /usr/bin/phpdbg$(phpVersion)
-    sudo update-alternatives --set php-cgi /usr/bin/php-cgi$(phpVersion)
-    sudo update-alternatives --set phar.phar /usr/bin/phar.phar$(phpVersion)
-    php -version
-  displayName: 'Use PHP version $(phpVersion)'
+        // Insere na tabela 'usuario'
+        $insert_user_query = $sql->prepare("INSERT INTO usuario (nome, email, senha, foto_path) VALUES (?, ?, ?, ?)");
+        $insert_user_query->bind_param("ssss", $nome, $email, $senha, $foto_path);
+        $insert_user_query->execute();
 
-- script: composer install --no-interaction --prefer-dist
-  displayName: 'composer install'
+        // Insere na tabela 'responsavel'
+        $insert_responsavel_query = $sql->prepare("INSERT INTO responsavel (email, telefone) VALUES (?, ?)");
+        $insert_responsavel_query->bind_param("ss", $email, $telefone);
+        $insert_responsavel_query->execute();
+
+        // Associa os responsáveis aos alunos na tabela 'responsavel_has_aluno'
+        $insert_responsavel_has_aluno_query = $sql->prepare("INSERT INTO responsavel_has_aluno (aluno_id, responsavel_email) VALUES (?, ?)");
+        foreach ($alunos_ids as $aluno_id) {
+            $insert_responsavel_has_aluno_query->bind_param("is", $aluno_id, $email);
+            $insert_responsavel_has_aluno_query->execute();
+        }
+
+        // Confirma transação
+        $sql->commit();
+
+        // Registro no log
+        $log_msg = "Responsável $nome cadastrado com o email $email e telefone $telefone.";
+        write_log($log_msg, 0);
+
+        header('Location: ../success.php');
+    } catch (Exception $e) {
+        // Reverte transação em caso de erro
+        if ($sql->in_transaction) {
+            $sql->rollback();
+        }
+
+        // Log de erro
+        error_log($e->getMessage());
+        header('Location: ../error.php?msg=' . urlencode($e->getMessage()));
+    }
+} else {
+    header('Location: ../form.php');
+}
+?>
